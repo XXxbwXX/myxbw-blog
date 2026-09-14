@@ -10,7 +10,7 @@ import {
   pathFor,
   putFile,
   repoFor
-} from './lib/github.js'
+} from '../server/github.js'
 import {
   isAllowedRequest,
   json,
@@ -18,7 +18,7 @@ import {
   readJsonBody,
   validatePayload,
   validateSlug
-} from './lib/security.js'
+} from '../server/security.js'
 
 function publicError(error) {
   const message = String(error?.message || '')
