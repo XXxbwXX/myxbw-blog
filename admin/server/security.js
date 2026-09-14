@@ -31,7 +31,11 @@ export function isAllowedOrigin(origin) {
 
 export function isAllowedRequest(req) {
   const origin = req.headers.origin || ''
-  if (!isAllowedOrigin(origin)) return false
+  if (origin && !isAllowedOrigin(origin)) return false
+
+  const fetchSite = req.headers['sec-fetch-site']
+  if (fetchSite && !['same-origin', 'same-site', 'none'].includes(fetchSite)) return false
+
   if (req.method === 'OPTIONS') return true
   return req.headers['x-blog-admin'] === 'myxbw-blog-admin'
 }
