@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { adminApi, errorText } from './api.js'
@@ -30,9 +30,16 @@ const view = ref('editor')
 const manageSearch = ref('')
 const manageStatus = ref('all')
 const manageBusy = ref(false)
+const mediaItems = ref([])
+const mediaLoading = ref(false)
+const mediaBusy = ref(false)
+const mediaSearch = ref('')
+const restoreData = ref(null)
 
 const BLOG_ORIGIN = 'https://blog.myxbw.cn'
 const UPLOAD_LIMIT = 3 * 1024 * 1024
+const SNIPPET_CODEBLOCK = '```\n\n```'
+const SNIPPET_TABLE = '| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n| 内容 | 内容 | 内容 |'
 
 const currentList = computed(() => (tab.value === 'draft' ? drafts.value : posts.value))
 const filteredList = computed(() => {
@@ -66,6 +73,12 @@ const manageItems = computed(() => {
     .filter((item) => manageStatus.value === 'all' || item.type === manageStatus.value)
     .filter((item) => !query || [item.title, item.slug, (item.tags || []).join(' ')].join(' ').toLowerCase().includes(query))
     .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+})
+const bodyLength = computed(() => (active.value?.body || '').length)
+const readingEstimate = computed(() => Math.max(1, Math.round(bodyLength.value / 500)))
+const filteredMedia = computed(() => {
+  const query = mediaSearch.value.trim().toLowerCase()
+  return mediaItems.value.filter((item) => !query || item.name.toLowerCase().includes(query))
 })
 
 function serialize(value) {
@@ -109,11 +122,116 @@ function emptyForm(overrides = {}) {
   }
 }
 
+const AUTOSAVE_KEY = 'myxbw-admin:autosave:v1'
+let autosaveTimer = null
+
+function readSnapshots() {
+  try {
+    return JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || '{}') || {}
+  } catch {
+    return {}
+  }
+}
+
+function writeSnapshots(map) {
+  try {
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(map))
+  } catch {
+    // 存储满了或被禁用时静默放弃，不影响编辑
+  }
+}
+
+function snapshotKey(value) {
+  if (!value) return ''
+  if (value.isNew) return 'new'
+  return `${value.type || 'draft'}:${value.slug}`
+}
+
+function snapshotFields(value) {
+  return {
+    title: value.title || '',
+    date: value.date || '',
+    description: value.description || '',
+    tagsText: value.tagsText || '',
+    readingTime: value.readingTime || '',
+    body: value.body || '',
+    savedAt: Date.now()
+  }
+}
+
+function snapshotMatches(value, snap) {
+  if (!snap) return true
+  return snap.title === (value.title || '') &&
+    snap.date === (value.date || '') &&
+    snap.description === (value.description || '') &&
+    snap.tagsText === (value.tagsText || '') &&
+    snap.readingTime === (value.readingTime || '') &&
+    snap.body === (value.body || '')
+}
+
+function clearSnapshotsFor(slug) {
+  const map = readSnapshots()
+  let changed = false
+  for (const key of [`draft:${slug}`, `post:${slug}`, 'new']) {
+    if (map[key]) {
+      delete map[key]
+      changed = true
+    }
+  }
+  if (changed) writeSnapshots(map)
+}
+
+function checkRestore(value) {
+  restoreData.value = null
+  if (!value) return
+  const snap = readSnapshots()[snapshotKey(value)]
+  if (snap && (snap.body || snap.title) && !snapshotMatches(value, snap)) {
+    restoreData.value = snap
+  }
+}
+
+function restoreSnapshot() {
+  const snap = restoreData.value
+  if (!snap || !active.value) return
+  active.value.title = snap.title || ''
+  active.value.date = snap.date || ''
+  active.value.description = snap.description || ''
+  active.value.tagsText = snap.tagsText || ''
+  active.value.readingTime = snap.readingTime || ''
+  active.value.body = snap.body || ''
+  restoreData.value = null
+  notice.value = '已恢复本地未保存的编辑，记得保存。'
+}
+
+function discardRestore() {
+  const value = active.value
+  restoreData.value = null
+  if (!value) return
+  const map = readSnapshots()
+  delete map[snapshotKey(value)]
+  writeSnapshots(map)
+}
+
+function scheduleAutosave() {
+  if (!active.value || view.value !== 'editor') return
+  if (!isDirty.value) return
+  if (autosaveTimer) clearTimeout(autosaveTimer)
+  autosaveTimer = setTimeout(() => {
+    if (!active.value || !isDirty.value || view.value !== 'editor') return
+    const map = readSnapshots()
+    map[snapshotKey(active.value)] = snapshotFields(active.value)
+    writeSnapshots(map)
+  }, 800)
+}
+
+watch(active, scheduleAutosave, { deep: true })
+
 function setActive(value) {
   active.value = value
   baseline.value = serialize(value)
   error.value = ''
   notice.value = ''
+  checkRestore(value)
 }
 
 function switchTab(next) {
@@ -265,6 +383,51 @@ function insertAtCursor(text) {
   })
 }
 
+function wrapSelection(prefix, suffix, placeholder) {
+  if (!active.value) return
+  const body = active.value.body || ''
+  const element = bodyInput.value
+  if (!element) {
+    active.value.body = `${body}${prefix}${placeholder}${suffix}`
+    return
+  }
+  const start = element.selectionStart ?? body.length
+  const end = element.selectionEnd ?? start
+  const selected = body.slice(start, end) || placeholder
+  active.value.body = `${body.slice(0, start)}${prefix}${selected}${suffix}${body.slice(end)}`
+  const caret = start + prefix.length
+  nextTick(() => {
+    element.focus()
+    if (selected === placeholder) {
+      element.setSelectionRange(caret, caret + placeholder.length)
+    } else {
+      const after = caret + selected.length + suffix.length
+      element.setSelectionRange(after, after)
+    }
+  })
+}
+
+function editorKeydown(event) {
+  if (!(event.metaKey || event.ctrlKey)) return
+  const key = event.key.toLowerCase()
+  if (key === 'b') {
+    event.preventDefault()
+    wrapSelection('**', '**', '加粗文字')
+  } else if (key === 'i') {
+    event.preventDefault()
+    wrapSelection('*', '*', '斜体文字')
+  }
+}
+
+function handleGlobalKeydown(event) {
+  if (!(event.metaKey || event.ctrlKey)) return
+  if (event.key.toLowerCase() !== 's') return
+  if (active.value && view.value === 'editor') {
+    event.preventDefault()
+    saveDraft()
+  }
+}
+
 function slugFromFilename(name) {
   const slug = String(name || '')
     .replace(/\.md$/i, '')
@@ -298,16 +461,13 @@ async function importMarkdownFile(file) {
   }
 }
 
-async function onFilePicked(event, mode) {
-  const input = event.target
-  const file = input?.files?.[0]
-  if (input) input.value = ''
+function isUploadAllowed(file) {
+  const name = String(file?.name || '')
+  return /\.(png|jpe?g|gif|webp|avif|pdf|txt|md|zip)$/i.test(name) || /^image\//.test(file?.type || '')
+}
+
+async function uploadFile(file) {
   if (!file || !active.value) return
-  if (mode === 'markdown') {
-    if (isDirty.value && !window.confirm('当前内容还没保存，导入会覆盖，继续？')) return
-    await importMarkdownFile(file)
-    return
-  }
   if (file.size > UPLOAD_LIMIT) {
     error.value = '文件太大了，单个文件不能超过 3MB。'
     return
@@ -333,11 +493,53 @@ async function onFilePicked(event, mode) {
   }
 }
 
+function onBodyPaste(event) {
+  if (!active.value) return
+  const files = Array.from(event.clipboardData?.files || [])
+  if (!files.length) return
+  const file = files[0]
+  if (!isUploadAllowed(file)) return
+  event.preventDefault()
+  uploadFile(file)
+}
+
+function onEditorDrop(event) {
+  if (!active.value) return
+  const files = Array.from(event.dataTransfer?.files || [])
+  if (!files.length) return
+  event.preventDefault()
+  const file = files[0]
+  if (/\.md$/i.test(file.name)) {
+    if (isDirty.value && !window.confirm('当前内容还没保存，导入会覆盖，继续？')) return
+    importMarkdownFile(file)
+    return
+  }
+  if (!isUploadAllowed(file)) {
+    error.value = '只支持 PNG/JPG/GIF/WebP/AVIF/PDF/TXT/MD/ZIP。'
+    return
+  }
+  uploadFile(file)
+}
+
+async function onFilePicked(event, mode) {
+  const input = event.target
+  const file = input?.files?.[0]
+  if (input) input.value = ''
+  if (!file || !active.value) return
+  if (mode === 'markdown') {
+    if (isDirty.value && !window.confirm('当前内容还没保存，导入会覆盖，继续？')) return
+    await importMarkdownFile(file)
+    return
+  }
+  await uploadFile(file)
+}
+
 async function saveDraft() {
   if (!validateForm()) return
   saving.value = true
   try {
     await run(() => adminApi.save(payloadFor('draft')), '草稿已保存到私有仓库。')
+    clearSnapshotsFor(active.value.slug)
     active.value.type = 'draft'
     active.value.isNew = false
     baseline.value = serialize(active.value)
@@ -362,6 +564,7 @@ async function publish() {
         return adminApi.publish(active.value.slug)
       }, '已发布，Vercel 正在构建，约 1 分钟上线。')
     }
+    clearSnapshotsFor(active.value.slug)
     active.value.type = 'post'
     active.value.isNew = false
     baseline.value = serialize(active.value)
@@ -397,6 +600,79 @@ function showManage() {
   sidebarOpen.value = false
   resetMessages()
   loadAll()
+}
+
+function showMedia() {
+  view.value = 'media'
+  mediaSearch.value = ''
+  sidebarOpen.value = false
+  resetMessages()
+  loadMedia()
+}
+
+async function loadMedia() {
+  mediaLoading.value = true
+  try {
+    const result = await run(() => adminApi.listUploads())
+    mediaItems.value = result.items || []
+  } catch {
+    // run 已经设置错误信息
+  } finally {
+    mediaLoading.value = false
+  }
+}
+
+function mediaThumb(item) {
+  return `${BLOG_ORIGIN}${item.url}`
+}
+
+function mediaSizeLabel(size) {
+  if (!size) return '—'
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`
+  return `${Math.max(1, Math.round(size / 1024))} KB`
+}
+
+function extLabel(name) {
+  const match = String(name || '').match(/\.([A-Za-z0-9]+)$/)
+  return match ? match[1].toUpperCase() : 'FILE'
+}
+
+function mediaMarkdown(item) {
+  const base = String(item.name).replace(/\.[^.]+$/, '').replace(/[\[\]]/g, '-') || 'file'
+  return item.kind === 'image' ? `![${base}](${item.url})` : `[${base}](${item.url})`
+}
+
+async function copyText(text, okMessage) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const helper = document.createElement('textarea')
+      helper.value = text
+      helper.style.position = 'fixed'
+      helper.style.opacity = '0'
+      document.body.appendChild(helper)
+      helper.select()
+      document.execCommand('copy')
+      helper.remove()
+    }
+    notice.value = okMessage
+  } catch {
+    error.value = '复制失败，请手动复制。'
+  }
+}
+
+async function deleteMedia(item) {
+  if (!window.confirm(`确认删除 ${item.name}？正文里引用它的链接会失效。`)) return
+  mediaBusy.value = true
+  try {
+    await run(() => adminApi.deleteUpload(item.path), '文件已删除，Vercel 正在重新构建。')
+    mediaItems.value = mediaItems.value.filter((entry) => entry.path !== item.path)
+  } catch {
+    // run 已经设置错误信息
+  } finally {
+    mediaBusy.value = false
+  }
 }
 
 async function openManagedItem(item) {
@@ -469,10 +745,13 @@ onMounted(async () => {
   await loadAll()
   if (!active.value) newPost()
   window.addEventListener('beforeunload', handleBeforeUnload)
+  window.addEventListener('keydown', handleGlobalKeydown)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
+  window.removeEventListener('keydown', handleGlobalKeydown)
+  if (autosaveTimer) clearTimeout(autosaveTimer)
 })
 
 </script>
@@ -490,6 +769,7 @@ onBeforeUnmount(() => {
 
       <button class="new-button" type="button" @click="newPost">＋ 新文章</button>
       <button class="manage-button" type="button" @click="showManage">📚 文章管理</button>
+      <button class="manage-button" type="button" @click="showMedia">🖼 媒体库</button>
 
       <div class="tabs">
         <button type="button" :class="{ active: tab === 'post' }" @click="switchTab('post')">
@@ -535,12 +815,18 @@ onBeforeUnmount(() => {
       <header class="topbar">
         <button class="menu-button" type="button" @click="sidebarOpen = !sidebarOpen">☰</button>
         <div class="topbar-title">
-          <strong>{{ view === 'manage' ? '文章管理' : active?.isNew ? '新文章' : active?.title || '未选择文章' }}</strong>
+          <strong>{{ view === 'manage' ? '文章管理' : view === 'media' ? '媒体库' : active?.isNew ? '新文章' : active?.title || '未选择文章' }}</strong>
           <span v-if="view === 'editor' && active" class="status-pill" :class="{ draft: active.type === 'draft' }">{{ statusLabel }}</span>
         </div>
         <div v-if="view === 'manage'" class="topbar-actions">
           <button class="ghost-button" type="button" :disabled="loading" @click="loadAll">
             {{ loading ? '刷新中…' : '刷新' }}
+          </button>
+          <button class="primary-button" type="button" @click="newPost">＋ 新文章</button>
+        </div>
+        <div v-else-if="view === 'media'" class="topbar-actions">
+          <button class="ghost-button" type="button" :disabled="mediaLoading" @click="loadMedia">
+            {{ mediaLoading ? '刷新中…' : '刷新' }}
           </button>
           <button class="primary-button" type="button" @click="newPost">＋ 新文章</button>
         </div>
@@ -613,6 +899,32 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <section v-else-if="view === 'media'" class="media-panel">
+        <div class="manage-toolbar">
+          <input v-model="mediaSearch" class="search manage-search" type="search" placeholder="搜索文件名…" />
+          <span class="manage-count">{{ filteredMedia.length }} 个文件 · 上传即公开，删除前请确认没有正文引用</span>
+        </div>
+        <div v-if="mediaLoading" class="empty-note">加载中…</div>
+        <div v-else class="media-grid">
+          <div v-for="item in filteredMedia" :key="item.path" class="media-card">
+            <a class="media-thumb" :href="mediaThumb(item)" target="_blank" rel="noopener noreferrer">
+              <img v-if="item.kind === 'image'" :src="mediaThumb(item)" :alt="item.name" loading="lazy" />
+              <span v-else class="media-ext">{{ extLabel(item.name) }}</span>
+            </a>
+            <div class="media-name" :title="item.name">{{ item.name }}</div>
+            <div class="media-meta">{{ mediaSizeLabel(item.size) }}</div>
+            <div class="media-actions">
+              <button type="button" class="link-button" @click="copyText(item.url, '链接已复制。')">复制链接</button>
+              <button type="button" class="link-button" @click="copyText(mediaMarkdown(item), 'Markdown 已复制。')">复制MD</button>
+              <button type="button" class="link-button danger" :disabled="mediaBusy" @click="deleteMedia(item)">删除</button>
+            </div>
+          </div>
+          <p v-if="!filteredMedia.length" class="empty-note">
+            还没有上传过文件。在编辑器里上传或直接粘贴/拖拽图片，文件会出现在这里。
+          </p>
+        </div>
+      </section>
+
       <section v-else-if="!active" class="empty-state">
         <h1>选一篇文章开始改</h1>
         <p>或者点右上角「新文章」。</p>
@@ -620,6 +932,13 @@ onBeforeUnmount(() => {
 
       <section v-else class="editor" :class="{ 'with-preview': preview }">
         <div class="editor-main">
+          <div v-if="restoreData" class="restore-banner">
+            <span>发现 {{ new Date(restoreData.savedAt).toLocaleString() }} 的本地未保存编辑。</span>
+            <span class="restore-actions">
+              <button type="button" class="link-button" @click="restoreSnapshot">恢复</button>
+              <button type="button" class="link-button" @click="discardRestore">丢弃</button>
+            </span>
+          </div>
           <input v-model="active.title" class="title-input" type="text" placeholder="文章标题" maxlength="120" />
           <textarea
             v-model="active.description"
@@ -648,7 +967,7 @@ onBeforeUnmount(() => {
             </label>
           </div>
 
-          <div class="body-row">
+          <div class="body-row" @dragover.prevent @dragenter.prevent @drop.prevent="onEditorDrop">
             <div class="body-toolbar">
               <div class="toolbar-actions">
                 <button type="button" class="tool-button" :disabled="!active || uploading" @click="mediaInput?.click()">
@@ -658,14 +977,29 @@ onBeforeUnmount(() => {
                   {{ importing ? '导入中…' : '导入本地 md' }}
                 </button>
               </div>
-              <span class="toolbar-hint">图片 / PDF / TXT / MD / ZIP，单文件 ≤ 3MB，上传即公开</span>
+              <span class="toolbar-hint">图片 / PDF / TXT / MD / ZIP，单文件 ≤ 3MB，上传即公开；可直接粘贴截图或拖拽文件进编辑器</span>
+            </div>
+            <div class="md-toolbar">
+              <button type="button" class="md-button" title="加粗 (Ctrl+B)" @click="wrapSelection('**', '**', '加粗文字')"><strong>B</strong></button>
+              <button type="button" class="md-button" title="斜体 (Ctrl+I)" @click="wrapSelection('*', '*', '斜体文字')"><em>I</em></button>
+              <button type="button" class="md-button" title="二级标题" @click="insertAtCursor('## 标题')">H2</button>
+              <button type="button" class="md-button" title="三级标题" @click="insertAtCursor('### 标题')">H3</button>
+              <button type="button" class="md-button" title="链接" @click="wrapSelection('[', '](https://)', '链接文字')">链接</button>
+              <button type="button" class="md-button" title="行内代码" @click="wrapSelection('`', '`', '代码')">代码</button>
+              <button type="button" class="md-button" title="代码块" @click="insertAtCursor(SNIPPET_CODEBLOCK)">代码块</button>
+              <button type="button" class="md-button" title="引用" @click="insertAtCursor('> 引用内容')">引用</button>
+              <button type="button" class="md-button" title="无序列表" @click="insertAtCursor('- 列表项')">列表</button>
+              <button type="button" class="md-button" title="表格" @click="insertAtCursor(SNIPPET_TABLE)">表格</button>
+              <button type="button" class="md-button" title="分割线" @click="insertAtCursor('---')">分割线</button>
             </div>
             <textarea
               ref="bodyInput"
               v-model="active.body"
               class="body-input"
-              placeholder="开始写 Markdown…"
+              placeholder="开始写 Markdown…可以直接粘贴截图，或把图片/文件拖进来"
               spellcheck="false"
+              @paste="onBodyPaste"
+              @keydown="editorKeydown"
             ></textarea>
             <input
               ref="mediaInput"
@@ -684,7 +1018,7 @@ onBeforeUnmount(() => {
           </div>
 
           <footer class="editor-footer">
-            <span>{{ (active.body || '').length }} 字符</span>
+            <span>{{ bodyLength }} 字符<template v-if="bodyLength"> · 约 {{ readingEstimate }} 分钟读完</template></span>
             <span v-if="isDirty" class="dirty">未保存</span>
             <span v-else>已保存</span>
           </footer>

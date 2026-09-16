@@ -191,6 +191,22 @@ export function validateMarkdownPayload(payload = {}) {
   return { markdown }
 }
 
+const UPLOAD_PATH_PATTERN = /^docs\/public\/uploads\/(\d{4})\/(\d{2})\/([A-Za-z0-9][A-Za-z0-9._-]*)$/
+const ALLOWED_UPLOAD_EXTENSIONS = [...IMAGE_EXTENSIONS, ...FILE_EXTENSIONS]
+
+export function validateUploadPath(value) {
+  const path = String(value || '').trim()
+  const match = UPLOAD_PATH_PATTERN.exec(path)
+  if (!match) throw new Error('invalid_upload_path')
+  const [, year, month, name] = match
+  if (name.includes('..')) throw new Error('invalid_upload_path')
+  const extension = name.slice(name.lastIndexOf('.')).toLowerCase()
+  if (!ALLOWED_UPLOAD_EXTENSIONS.includes(extension)) throw new Error('invalid_upload_path')
+  if (!/^(0[1-9]|1[0-2])$/.test(month)) throw new Error('invalid_upload_path')
+  if (year < '2020' || year > '2100') throw new Error('invalid_upload_path')
+  return path
+}
+
 export function json(res, status, data) {
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')

@@ -118,6 +118,16 @@ export async function putFile(repo, path, content, message) {
   }
 }
 
+export async function listTree(repo, prefix) {
+  const data = await request(
+    `/repos/${encodeURIComponent(OWNER)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(BRANCH)}?recursive=1`
+  )
+  if (!Array.isArray(data?.tree) || data.truncated) return []
+  return data.tree.filter(
+    (entry) => entry.type === 'blob' && String(entry.path || '').startsWith(prefix)
+  )
+}
+
 export async function getFileMeta(repo, path) {
   try {
     const data = await request(
@@ -161,7 +171,7 @@ export async function putBinaryFile(repo, path, base64, message) {
 }
 
 export async function deleteFile(repo, path, message) {
-  const existing = await getFile(repo, path)
+  const existing = await getFileMeta(repo, path)
   if (!existing) return { deleted: false }
 
   await request(

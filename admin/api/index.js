@@ -9,6 +9,7 @@ import {
   getFileMeta,
   hasToken,
   listDirectory,
+  listTree,
   pathFor,
   putBinaryFile,
   putFile,
@@ -23,8 +24,12 @@ import {
   validateMarkdownPayload,
   validatePayload,
   validateSlug,
+  validateUploadPath,
   validateUploadPayload
 } from '../server/security.js'
+
+const UPLOAD_DIR = 'docs/public/uploads'
+const UPLOAD_EXTENSION_PATTERN = /\.(png|jpe?g|gif|webp|avif|pdf|txt|md|zip)$/i
 
 function publicError(error) {
   const message = String(error?.message || '')
@@ -195,7 +200,7 @@ async function uploadOne(payload) {
   const { year, month } = shanghaiMonth()
   const hash = createHash('sha256').update(file.buffer).digest('hex').slice(0, 12)
   const safeName = `${hash}-${sanitizeUploadName(file.filename, file.extension)}`
-  const objectPath = `docs/public/uploads/${year}/${month}/${safeName}`
+  const objectPath = `${UPLOAD_DIR}/${year}/${month}/${safeName}`
   const existing = await getFileMeta(PUBLIC_REPO, objectPath)
   if (!existing) {
     await putBinaryFile(PUBLIC_REPO, objectPath, file.buffer.toString('base64'), `upload: ${safeName}`)
@@ -208,6 +213,39 @@ async function uploadOne(payload) {
     path: objectPath,
     size: file.size
   }
+}
+
+async function listUploadsOne() {
+  const entries = await listTree(PUBLIC_REPO, `${UPLOAD_DIR}/`)
+  return entries
+    .filter((entry) => UPLOAD_EXTENSION_PATTERN.test(entry.path))
+    .map((entry) => {
+      const parts = entry.path.split('/')
+      const name = parts[parts.length - 1]
+      const year = parts[parts.length - 3] || ''
+      const month = parts[parts.length - 2] || ''
+      return {
+        name,
+        path: entry.path,
+        size: Number(entry.size) || 0,
+        sha: entry.sha,
+        kind: /\.(png|jpe?g|gif|webp|avif)$/i.test(name) ? 'image' : 'file',
+        url: `/uploads/${year}/${month}/${encodeURIComponent(name)}`
+      }
+    })
+    .sort((a, b) => b.path.localeCompare(a.path))
+    .slice(0, 500)
+}
+
+async function deleteUploadOne(payload) {
+  const path = validateUploadPath(payload.path)
+  const result = await deleteFile(PUBLIC_REPO, path, `upload: delete ${path.split('/').pop()}`)
+  if (!result.deleted) {
+    const error = new Error('not_found')
+    error.status = 404
+    throw error
+  }
+  return { ok: true, path }
 }
 
 async function parseMarkdownOne(payload) {
@@ -248,6 +286,12 @@ export default async function handler(req, res) {
     if (action === 'upload') {
       if (!rateLimit(`upload:${ip}`, 20, 10 * 60 * 1000)) return json(res, 429, { error: 'too_many_requests' })
       return json(res, 200, await uploadOne(payload))
+    }
+    if (action === 'listUploads') {
+      return json(res, 200, { ok: true, items: await listUploadsOne() })
+    }
+    if (action === 'deleteUpload') {
+      return json(res, 200, await deleteUploadOne(payload))
     }
     if (action === 'parseMarkdown') {
       return json(res, 200, await parseMarkdownOne(payload))

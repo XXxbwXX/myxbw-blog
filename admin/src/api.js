@@ -32,10 +32,15 @@ export const adminApi = {
   unpublish: (slug) => request('POST', { action: 'unpublish', slug }),
   remove: (type, slug) => request('POST', { action: 'delete', type, slug }),
   upload: (payload) => request('POST', { action: 'upload', ...payload }),
+  listUploads: () => request('POST', { action: 'listUploads' }),
+  deleteUpload: (path) => request('POST', { action: 'deleteUpload', path }),
   parseMarkdown: (payload) => request('POST', { action: 'parseMarkdown', ...payload })
 }
 
 export function errorText(error) {
+  if (error?.status === 401) return '登录状态可能已过期，请刷新页面重新登录 Vercel。'
+  if (error?.status === 403) return '请求来源校验失败，请刷新页面重试。'
+  if (error?.status === 502 || error?.status === 504) return '服务暂时不可用，请稍后再试。'
   const map = {
     token_missing: '后台还没配置 GITHUB_TOKEN，请先在 Vercel 环境变量里补上。',
     forbidden: '请求来源校验失败，请刷新页面重试。',
@@ -50,6 +55,7 @@ export function errorText(error) {
     invalid_filename: '文件名不合法，请改名后重试。',
     invalid_file_type: '只支持 PNG/JPG/GIF/WebP/AVIF/PDF/TXT/MD/ZIP。',
     invalid_file_data: '文件内容校验失败，请确认文件没有损坏。',
+    invalid_upload_path: '文件路径不合法，只能删除 uploads 目录下的文件。',
     file_too_large: '文件太大了，单个文件不能超过 3MB。',
     draft_conflict: '同名草稿已存在，先把草稿处理掉再下架。',
     protected_post: '不能删除受保护的文章。',
