@@ -8,10 +8,20 @@
 - 草稿保存在私有仓库 `XXxbwXX/myxbw-blog-drafts`
 - 发布后提交到公开仓库 `XXxbwXX/myxbw-blog` 的 `docs/posts/`
 - 公开博客自动构建上线
+- 支持从本地上传图片/附件到 `docs/public/uploads/`，并自动插入 Markdown
+- 支持导入本地 Markdown 文件到编辑器
 
 ## 访问保护
 
 管理端单独部署，使用 Vercel Authentication（SSO），未登录 Vercel 的访客无法访问页面和 `/api`。
+
+## 本地上传
+
+- 编辑器正文上方有「上传图片/附件」和「导入本地 md」。
+- 上传文件写入公开仓库 `docs/public/uploads/YYYY/MM/`，Markdown 中使用 `/uploads/...` 路径，博客构建后可直接访问。
+- 单文件限制 3MB，允许 PNG/JPG/GIF/WebP/AVIF/PDF/TXT/MD/ZIP；服务端会校验扩展名和文件头。
+- 上传文件会进入公开仓库，不要上传隐私文件。
+- 上传会向公开仓库提交 commit，可能触发一次博客构建。
 
 ## 环境变量
 

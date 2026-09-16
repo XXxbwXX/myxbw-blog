@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import matter from 'gray-matter'
 import {
   BRANCH,
@@ -5,9 +6,11 @@ import {
   PUBLIC_REPO,
   deleteFile,
   getFile,
+  getFileMeta,
   hasToken,
   listDirectory,
   pathFor,
+  putBinaryFile,
   putFile,
   repoFor
 } from '../server/github.js'
@@ -16,14 +19,19 @@ import {
   json,
   rateLimit,
   readJsonBody,
+  sanitizeUploadName,
+  validateMarkdownPayload,
   validatePayload,
-  validateSlug
+  validateSlug,
+  validateUploadPayload
 } from '../server/security.js'
 
 function publicError(error) {
   const message = String(error?.message || '')
-  if (message === 'token_missing') return { status: 503, body: { error: 'token_missing' } }
+  const code = String(error?.code || '')
+  if (message === 'token_missing' || code === 'token_missing') return { status: 503, body: { error: 'token_missing' } }
   if (message === 'body_too_large') return { status: 413, body: { error: 'body_too_large' } }
+  if (message === 'file_too_large') return { status: 413, body: { error: 'file_too_large' } }
   if (message.startsWith('invalid_') || message === 'too_many_tags' || message === 'content_too_large') {
     return { status: 400, body: { error: message } }
   }
@@ -139,6 +147,48 @@ async function deleteOne(type, slug) {
   return { ok: true, slug }
 }
 
+function shanghaiMonth(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit'
+  }).formatToParts(date)
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return { year: values.year, month: values.month }
+}
+
+async function uploadOne(payload) {
+  const file = validateUploadPayload(payload)
+  const { year, month } = shanghaiMonth()
+  const hash = createHash('sha256').update(file.buffer).digest('hex').slice(0, 12)
+  const safeName = `${hash}-${sanitizeUploadName(file.filename, file.extension)}`
+  const objectPath = `docs/public/uploads/${year}/${month}/${safeName}`
+  const existing = await getFileMeta(PUBLIC_REPO, objectPath)
+  if (!existing) {
+    await putBinaryFile(PUBLIC_REPO, objectPath, file.buffer.toString('base64'), `upload: ${safeName}`)
+  }
+  return {
+    ok: true,
+    kind: file.kind,
+    name: safeName,
+    url: `/uploads/${year}/${month}/${encodeURIComponent(safeName)}`,
+    path: objectPath,
+    size: file.size
+  }
+}
+
+async function parseMarkdownOne(payload) {
+  const { markdown } = validateMarkdownPayload(payload)
+  const parsed = matter(markdown)
+  const data = { ...(parsed.data || {}) }
+  if (data.date instanceof Date) data.date = data.date.toISOString().slice(0, 10)
+  return {
+    ok: true,
+    data,
+    content: parsed.content.replace(/^\s*\n/, '')
+  }
+}
+
 export default async function handler(req, res) {
   try {
     if (!isAllowedRequest(req)) return json(res, 403, { error: 'forbidden' })
@@ -162,6 +212,13 @@ export default async function handler(req, res) {
 
     const payload = await readJsonBody(req)
     const action = String(payload.action || '')
+    if (action === 'upload') {
+      if (!rateLimit(`upload:${ip}`, 20, 10 * 60 * 1000)) return json(res, 429, { error: 'too_many_requests' })
+      return json(res, 200, await uploadOne(payload))
+    }
+    if (action === 'parseMarkdown') {
+      return json(res, 200, await parseMarkdownOne(payload))
+    }
     if (action === 'list') {
       const type = payload.type === 'draft' ? 'draft' : 'post'
       return json(res, 200, { ok: true, type, items: await loadItems(type) })

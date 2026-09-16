@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { adminApi, errorText } from './api.js'
@@ -21,6 +21,14 @@ const deleting = ref(false)
 const preview = ref(false)
 const sidebarOpen = ref(false)
 const baseline = ref('')
+const bodyInput = ref(null)
+const mediaInput = ref(null)
+const markdownInput = ref(null)
+const uploading = ref(false)
+const importing = ref(false)
+
+const BLOG_ORIGIN = 'https://blog.myxbw.cn'
+const UPLOAD_LIMIT = 3 * 1024 * 1024
 
 const currentList = computed(() => (tab.value === 'draft' ? drafts.value : posts.value))
 const filteredList = computed(() => {
@@ -38,7 +46,9 @@ const tagsArray = computed(() =>
 )
 const previewHtml = computed(() => {
   if (!active.value?.body) return ''
-  return DOMPurify.sanitize(marked.parse(active.value.body))
+  const raw = marked.parse(active.value.body)
+  const withUploadOrigin = raw.replace(/(src|href)="\/uploads\//g, `$1="${BLOG_ORIGIN}/uploads/`)
+  return DOMPurify.sanitize(withUploadOrigin)
 })
 const isDirty = computed(() => (active.value ? serialize(active.value) !== baseline.value : false))
 const statusLabel = computed(() => (active.value?.type === 'draft' ? '草稿' : '已发布'))
@@ -57,6 +67,11 @@ function serialize(value) {
 
 function today() {
   return new Date().toISOString().slice(0, 10)
+}
+
+function dateValue(value) {
+  const match = String(value || '').match(/^(\d{4}-\d{2}-\d{2})/)
+  return match ? match[1] : ''
 }
 
 function randomSlug() {
@@ -189,6 +204,115 @@ function payloadFor(type) {
     tags: tagsArray.value,
     readingTime: active.value.readingTime || undefined,
     body: active.value.body
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('read_failed'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('read_failed'))
+    reader.readAsText(file, 'utf-8')
+  })
+}
+
+function insertAtCursor(text) {
+  if (!active.value) return
+  const body = active.value.body || ''
+  const element = bodyInput.value
+  if (!element) {
+    active.value.body = `${body}${body ? '\n' : ''}${text}\n`
+    return
+  }
+  const start = element.selectionStart ?? body.length
+  const end = element.selectionEnd ?? start
+  const before = body.slice(0, start)
+  const after = body.slice(end)
+  const prefix = before && !before.endsWith('\n') ? '\n' : ''
+  const suffix = after && !after.startsWith('\n') ? '\n' : ''
+  const insertion = `${prefix}${text}${suffix}`
+  active.value.body = `${before}${insertion}${after}`
+  nextTick(() => {
+    element.focus()
+    const position = start + insertion.length
+    element.setSelectionRange(position, position)
+  })
+}
+
+function slugFromFilename(name) {
+  const slug = String(name || '')
+    .replace(/\.md$/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+  return /^[a-z0-9][a-z0-9-]{1,80}$/.test(slug) ? slug : randomSlug()
+}
+
+async function importMarkdownFile(file) {
+  importing.value = true
+  try {
+    const text = await readFileAsText(file)
+    const result = await run(() => adminApi.parseMarkdown({ markdown: text }))
+    const data = result.data || {}
+    active.value.title = String(data.title || file.name.replace(/\.md$/i, '') || '未命名文章')
+    active.value.date = dateValue(data.date) || today()
+    active.value.description = String(data.description || '')
+    active.value.tagsText = Array.isArray(data.tags)
+      ? data.tags.map(String).join(', ')
+      : String(data.tags || '')
+    active.value.readingTime = data.readingTime ? String(data.readingTime) : ''
+    active.value.body = String(result.content || '').replace(/^\s*\n/, '')
+    if (active.value.isNew) active.value.slug = slugFromFilename(file.name)
+    notice.value = '已导入本地 Markdown，检查后保存为草稿。'
+  } catch (err) {
+    if (err?.message === 'read_failed') error.value = '读取文件失败，请重试。'
+  } finally {
+    importing.value = false
+  }
+}
+
+async function onFilePicked(event, mode) {
+  const input = event.target
+  const file = input?.files?.[0]
+  if (input) input.value = ''
+  if (!file || !active.value) return
+  if (mode === 'markdown') {
+    if (isDirty.value && !window.confirm('当前内容还没保存，导入会覆盖，继续？')) return
+    await importMarkdownFile(file)
+    return
+  }
+  if (file.size > UPLOAD_LIMIT) {
+    error.value = '文件太大了，单个文件不能超过 3MB。'
+    return
+  }
+  uploading.value = true
+  try {
+    const dataUrl = await readFileAsDataUrl(file)
+    const dataBase64 = dataUrl.includes(',') ? dataUrl.slice(dataUrl.indexOf(',') + 1) : dataUrl
+    const result = await run(() => adminApi.upload({
+      filename: file.name,
+      mime: file.type || '',
+      dataBase64
+    }))
+    const label = String(file.name || 'file').replace(/\.[^.]+$/, '').replace(/[\[\]]/g, '-') || 'file'
+    const linkLabel = String(file.name || 'file').replace(/[\[\]()]/g, '-')
+    const markdown = result.kind === 'image' ? `![${label}](${result.url})` : `[${linkLabel}](${result.url})`
+    insertAtCursor(markdown)
+    notice.value = `已上传并插入：${result.name}`
+  } catch (err) {
+    if (err?.message === 'read_failed') error.value = '读取文件失败，请重试。'
+  } finally {
+    uploading.value = false
   }
 }
 
@@ -388,12 +512,38 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="body-row">
+            <div class="body-toolbar">
+              <div class="toolbar-actions">
+                <button type="button" class="tool-button" :disabled="!active || uploading" @click="mediaInput?.click()">
+                  {{ uploading ? '上传中…' : '上传图片/附件' }}
+                </button>
+                <button type="button" class="tool-button" :disabled="!active || importing" @click="markdownInput?.click()">
+                  {{ importing ? '导入中…' : '导入本地 md' }}
+                </button>
+              </div>
+              <span class="toolbar-hint">图片 / PDF / TXT / MD / ZIP，单文件 ≤ 3MB，上传即公开</span>
+            </div>
             <textarea
+              ref="bodyInput"
               v-model="active.body"
               class="body-input"
               placeholder="开始写 Markdown…"
               spellcheck="false"
             ></textarea>
+            <input
+              ref="mediaInput"
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp,image/avif,.pdf,.txt,.md,.zip"
+              hidden
+              @change="onFilePicked($event, 'upload')"
+            />
+            <input
+              ref="markdownInput"
+              type="file"
+              accept=".md,.markdown,text/markdown,text/plain"
+              hidden
+              @change="onFilePicked($event, 'markdown')"
+            />
           </div>
 
           <footer class="editor-footer">

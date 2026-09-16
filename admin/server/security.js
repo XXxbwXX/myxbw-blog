@@ -1,8 +1,11 @@
-const BODY_LIMIT = 256 * 1024
+const BODY_LIMIT = 4.5 * 1024 * 1024
 const CONTENT_LIMIT = 200 * 1024
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,80}$/
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const TAG_PATTERN = /^[\p{L}\p{N} _.-]{1,24}$/u
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif'])
+const FILE_EXTENSIONS = new Set(['.pdf', '.txt', '.md', '.zip'])
+export const MAX_UPLOAD_BYTES = 3 * 1024 * 1024
 
 const defaultOrigins = [
   'https://write.myxbw.cn',
@@ -90,6 +93,102 @@ export function validatePayload(payload = {}) {
   readingTime = Math.min(120, Math.round(readingTime))
 
   return { type, slug, title, date, description, tags, readingTime, body }
+}
+
+function hasPrefix(buffer, bytes) {
+  if (buffer.length < bytes.length) return false
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (buffer[index] !== bytes[index]) return false
+  }
+  return true
+}
+
+function isValidImage(buffer, extension) {
+  if (extension === '.png') {
+    return hasPrefix(buffer, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  }
+  if (extension === '.jpg' || extension === '.jpeg') {
+    return hasPrefix(buffer, [0xff, 0xd8, 0xff])
+  }
+  if (extension === '.gif') {
+    return hasPrefix(buffer, [0x47, 0x49, 0x46, 0x38])
+  }
+  if (extension === '.webp') {
+    return buffer.length >= 12 &&
+      buffer.subarray(0, 4).toString('latin1') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('latin1') === 'WEBP'
+  }
+  if (extension === '.avif') {
+    if (buffer.length < 16 || buffer.subarray(4, 8).toString('latin1') !== 'ftyp') return false
+    const brand = buffer.subarray(8, 12).toString('latin1')
+    return ['avif', 'avis', 'av01', 'mif1'].includes(brand)
+  }
+  return false
+}
+
+function isValidZip(buffer) {
+  return hasPrefix(buffer, [0x50, 0x4b, 0x03, 0x04]) ||
+    hasPrefix(buffer, [0x50, 0x4b, 0x05, 0x06]) ||
+    hasPrefix(buffer, [0x50, 0x4b, 0x07, 0x08])
+}
+
+export function sanitizeUploadName(filename, extension) {
+  const base = String(filename || '')
+    .replace(/\.[^.]*$/, '')
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[.\-_]+|[.\-_]+$/g, '')
+    .slice(0, 60)
+  return `${base || 'file'}${extension}`
+}
+
+export function validateUploadPayload(payload = {}) {
+  const filename = String(payload.filename || '').trim()
+  if (!filename || filename.length > 160) throw new Error('invalid_filename')
+  if (/[\/\\\u0000]/.test(filename) || filename.includes('..')) throw new Error('invalid_filename')
+
+  const match = filename.match(/\.([A-Za-z0-9]+)$/)
+  if (!match) throw new Error('invalid_file_type')
+  const extension = `.${match[1].toLowerCase()}`
+  const mime = String(payload.mime || '').toLowerCase()
+
+  const dataBase64 = String(payload.dataBase64 || '').replace(/\s+/g, '')
+  if (!dataBase64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) {
+    throw new Error('invalid_file_data')
+  }
+  if (dataBase64.length > Math.ceil(MAX_UPLOAD_BYTES / 3) * 4 + 4) {
+    throw new Error('file_too_large')
+  }
+  const buffer = Buffer.from(dataBase64, 'base64')
+  if (!buffer.length) throw new Error('invalid_file_data')
+  if (buffer.length > MAX_UPLOAD_BYTES) throw new Error('file_too_large')
+
+  let kind = ''
+  if (IMAGE_EXTENSIONS.has(extension)) {
+    kind = 'image'
+    if (mime && !mime.startsWith('image/')) throw new Error('invalid_file_type')
+    if (!isValidImage(buffer, extension)) throw new Error('invalid_file_data')
+  } else if (FILE_EXTENSIONS.has(extension)) {
+    kind = 'file'
+    if (extension === '.pdf' && !hasPrefix(buffer, Buffer.from('%PDF-'))) {
+      throw new Error('invalid_file_data')
+    }
+    if (extension === '.zip' && !isValidZip(buffer)) throw new Error('invalid_file_data')
+    if ((extension === '.txt' || extension === '.md') && buffer.includes(0)) {
+      throw new Error('invalid_file_data')
+    }
+  } else {
+    throw new Error('invalid_file_type')
+  }
+
+  return { filename, extension, mime, kind, buffer, size: buffer.length }
+}
+
+export function validateMarkdownPayload(payload = {}) {
+  const markdown = String(payload.markdown || '')
+  if (Buffer.byteLength(markdown, 'utf8') > CONTENT_LIMIT) throw new Error('content_too_large')
+  return { markdown }
 }
 
 export function json(res, status, data) {

@@ -118,6 +118,48 @@ export async function putFile(repo, path, content, message) {
   }
 }
 
+export async function getFileMeta(repo, path) {
+  try {
+    const data = await request(
+      `/repos/${encodeURIComponent(OWNER)}/${encodeURIComponent(repo)}/contents/${encodePath(path)}?ref=${encodeURIComponent(BRANCH)}`
+    )
+    if (!data || data.type !== 'file') return null
+    return {
+      sha: data.sha,
+      path: data.path,
+      name: data.name,
+      size: data.size
+    }
+  } catch (error) {
+    if (error.status === 404) return null
+    throw error
+  }
+}
+
+export async function putBinaryFile(repo, path, base64, message) {
+  const existing = await getFileMeta(repo, path)
+  const body = {
+    message,
+    content: base64,
+    branch: BRANCH
+  }
+  if (existing?.sha) body.sha = existing.sha
+
+  const data = await request(
+    `/repos/${encodeURIComponent(OWNER)}/${encodeURIComponent(repo)}/contents/${encodePath(path)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }
+  )
+
+  return {
+    sha: data?.content?.sha || null,
+    commit: data?.commit?.sha || null
+  }
+}
+
 export async function deleteFile(repo, path, message) {
   const existing = await getFile(repo, path)
   if (!existing) return { deleted: false }

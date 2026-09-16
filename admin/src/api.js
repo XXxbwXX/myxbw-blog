@@ -29,7 +29,9 @@ export const adminApi = {
   get: (type, slug) => request('POST', { action: 'get', type, slug }),
   save: (payload) => request('POST', { action: 'save', ...payload }),
   publish: (slug) => request('POST', { action: 'publish', slug }),
-  remove: (type, slug) => request('POST', { action: 'delete', type, slug })
+  remove: (type, slug) => request('POST', { action: 'delete', type, slug }),
+  upload: (payload) => request('POST', { action: 'upload', ...payload }),
+  parseMarkdown: (payload) => request('POST', { action: 'parseMarkdown', ...payload })
 }
 
 export function errorText(error) {
@@ -44,6 +46,10 @@ export function errorText(error) {
     too_many_tags: '标签最多 10 个。',
     invalid_tag: '标签只能包含中英文、数字、空格、点、下划线和连字符，单个不超过 24 字。',
     body_too_large: '提交内容过大，请拆分为更短的文章。',
+    invalid_filename: '文件名不合法，请改名后重试。',
+    invalid_file_type: '只支持 PNG/JPG/GIF/WebP/AVIF/PDF/TXT/MD/ZIP。',
+    invalid_file_data: '文件内容校验失败，请确认文件没有损坏。',
+    file_too_large: '文件太大了，单个文件不能超过 3MB。',
     too_many_requests: '操作太频繁，请稍后再试。',
     not_found: '没有找到这篇文章。',
     conflict: '文件在别处被改过，请刷新后重试。',
