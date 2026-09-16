@@ -9,6 +9,7 @@ export default defineConfig({
   sitemap: { hostname: 'https://blog.myxbw.cn' },
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+    ['link', { rel: 'alternate', type: 'application/rss+xml', title: 'myxbw 的博客', href: '/feed.xml' }],
     ['meta', { name: 'theme-color', content: '#fbfaf7' }],
     ['meta', { name: 'author', content: 'myxbw' }],
     ['meta', { property: 'og:type', content: 'website' }],
@@ -74,7 +75,7 @@ export default defineConfig({
       }
     },
     footer: {
-      message: '<a href="https://learn.myxbw.cn/">全站导航</a> · <a href="https://www.myxbw.cn/">知识库</a> · <a href="/about">关于</a>',
+      message: '<a href="https://learn.myxbw.cn/">全站导航</a> · <a href="https://www.myxbw.cn/">知识库</a> · <a href="/about">关于</a> · <a href="/feed.xml">RSS</a>',
       copyright: 'Copyright © 2026 myxbw · 记录本身就有意义'
     }
   },

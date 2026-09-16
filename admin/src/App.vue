@@ -466,8 +466,34 @@ function isUploadAllowed(file) {
   return /\.(png|jpe?g|gif|webp|avif|pdf|txt|md|zip)$/i.test(name) || /^image\//.test(file?.type || '')
 }
 
+async function compressImage(file) {
+  if (!file || file.size < 300 * 1024) return file
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type || '')) return file
+  try {
+    const bitmap = await createImageBitmap(file)
+    const maxEdge = 1920
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    bitmap.close()
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, file.type, 0.85))
+    if (!blob || blob.size >= file.size) return file
+    return new File([blob], file.name, { type: file.type })
+  } catch {
+    return file
+  }
+}
+
 async function uploadFile(file) {
   if (!file || !active.value) return
+  if (file.size > UPLOAD_LIMIT) {
+    error.value = '文件太大了，单个文件不能超过 3MB。'
+    return
+  }
+  const originalSize = file.size
+  file = await compressImage(file)
   if (file.size > UPLOAD_LIMIT) {
     error.value = '文件太大了，单个文件不能超过 3MB。'
     return
@@ -485,7 +511,9 @@ async function uploadFile(file) {
     const linkLabel = String(file.name || 'file').replace(/[\[\]()]/g, '-')
     const markdown = result.kind === 'image' ? `![${label}](${result.url})` : `[${linkLabel}](${result.url})`
     insertAtCursor(markdown)
-    notice.value = `已上传并插入：${result.name}`
+    notice.value = file.size < originalSize
+      ? `已压缩上传（${mediaSizeLabel(originalSize)} → ${mediaSizeLabel(file.size)}）：${result.name}`
+      : `已上传并插入：${result.name}`
   } catch (err) {
     if (err?.message === 'read_failed') error.value = '读取文件失败，请重试。'
   } finally {
@@ -666,10 +694,12 @@ async function deleteMedia(item) {
   if (!window.confirm(`确认删除 ${item.name}？正文里引用它的链接会失效。`)) return
   mediaBusy.value = true
   try {
-    await run(() => adminApi.deleteUpload(item.path), '文件已删除，Vercel 正在重新构建。')
+    await run(() => adminApi.deleteUpload(item.path, item.storage), '文件已删除。')
     mediaItems.value = mediaItems.value.filter((entry) => entry.path !== item.path)
-  } catch {
-    // run 已经设置错误信息
+  } catch (err) {
+    if (Array.isArray(err?.refs) && err.refs.length) {
+      error.value = `删除失败，文件仍被引用：${err.refs.join('、')}`
+    }
   } finally {
     mediaBusy.value = false
   }
@@ -912,7 +942,7 @@ onBeforeUnmount(() => {
               <span v-else class="media-ext">{{ extLabel(item.name) }}</span>
             </a>
             <div class="media-name" :title="item.name">{{ item.name }}</div>
-            <div class="media-meta">{{ mediaSizeLabel(item.size) }}</div>
+            <div class="media-meta">{{ mediaSizeLabel(item.size) }} · {{ item.storage === 'blob' ? 'Blob 存储' : '仓库' }}</div>
             <div class="media-actions">
               <button type="button" class="link-button" @click="copyText(item.url, '链接已复制。')">复制链接</button>
               <button type="button" class="link-button" @click="copyText(mediaMarkdown(item), 'Markdown 已复制。')">复制MD</button>

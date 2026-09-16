@@ -18,6 +18,7 @@ async function request(method, payload) {
     const error = new Error(data.error || `HTTP ${response.status}`)
     error.status = response.status
     error.code = data.error
+    if (Array.isArray(data.refs)) error.refs = data.refs
     throw error
   }
   return data
@@ -33,7 +34,7 @@ export const adminApi = {
   remove: (type, slug) => request('POST', { action: 'delete', type, slug }),
   upload: (payload) => request('POST', { action: 'upload', ...payload }),
   listUploads: () => request('POST', { action: 'listUploads' }),
-  deleteUpload: (path) => request('POST', { action: 'deleteUpload', path }),
+  deleteUpload: (path, storage) => request('POST', { action: 'deleteUpload', path, storage }),
   parseMarkdown: (payload) => request('POST', { action: 'parseMarkdown', ...payload })
 }
 
@@ -56,6 +57,7 @@ export function errorText(error) {
     invalid_file_type: '只支持 PNG/JPG/GIF/WebP/AVIF/PDF/TXT/MD/ZIP。',
     invalid_file_data: '文件内容校验失败，请确认文件没有损坏。',
     invalid_upload_path: '文件路径不合法，只能删除 uploads 目录下的文件。',
+    upload_in_use: '文件仍被文章引用，先删掉正文里的引用再删文件。',
     file_too_large: '文件太大了，单个文件不能超过 3MB。',
     draft_conflict: '同名草稿已存在，先把草稿处理掉再下架。',
     protected_post: '不能删除受保护的文章。',

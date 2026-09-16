@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto'
 import matter from 'gray-matter'
 import {
+  hasBlob,
+  headBlobObject,
+  listBlobObjects,
+  putBlobObject,
+  deleteBlobObject
+} from '../server/blob.js'
+import {
   BRANCH,
   DRAFTS_REPO,
   PUBLIC_REPO,
@@ -39,6 +46,7 @@ function publicError(error) {
   if (message === 'file_too_large') return { status: 413, body: { error: 'file_too_large' } }
   if (message === 'draft_conflict') return { status: 409, body: { error: 'draft_conflict' } }
   if (message === 'protected_post') return { status: 400, body: { error: 'protected_post' } }
+  if (message === 'upload_in_use') return { status: 409, body: { error: 'upload_in_use', refs: error.refs || [] } }
   if (message.startsWith('invalid_') || message === 'too_many_tags' || message === 'content_too_large') {
     return { status: 400, body: { error: message } }
   }
@@ -201,23 +209,27 @@ async function uploadOne(payload) {
   const hash = createHash('sha256').update(file.buffer).digest('hex').slice(0, 12)
   const safeName = `${hash}-${sanitizeUploadName(file.filename, file.extension)}`
   const objectPath = `${UPLOAD_DIR}/${year}/${month}/${safeName}`
+  const url = `/uploads/${year}/${month}/${encodeURIComponent(safeName)}`
+
+  if (hasBlob()) {
+    await putBlobObject(objectPath, file.buffer, file.mime)
+    return { ok: true, kind: file.kind, name: safeName, url, storage: 'blob', size: file.size }
+  }
+
   const existing = await getFileMeta(PUBLIC_REPO, objectPath)
   if (!existing) {
     await putBinaryFile(PUBLIC_REPO, objectPath, file.buffer.toString('base64'), `upload: ${safeName}`)
   }
-  return {
-    ok: true,
-    kind: file.kind,
-    name: safeName,
-    url: `/uploads/${year}/${month}/${encodeURIComponent(safeName)}`,
-    path: objectPath,
-    size: file.size
-  }
+  return { ok: true, kind: file.kind, name: safeName, url, storage: 'repo', size: file.size }
 }
 
 async function listUploadsOne() {
-  const entries = await listTree(PUBLIC_REPO, `${UPLOAD_DIR}/`)
-  return entries
+  const tasks = [listTree(PUBLIC_REPO, `${UPLOAD_DIR}/`)]
+  if (hasBlob()) tasks.push(listBlobObjects(`${UPLOAD_DIR}/`).catch(() => []))
+  const [repoEntries, blobEntries = []] = await Promise.all(tasks)
+
+  const toKind = (name) => (/\.(png|jpe?g|gif|webp|avif)$/i.test(name) ? 'image' : 'file')
+  const repoItems = repoEntries
     .filter((entry) => UPLOAD_EXTENSION_PATTERN.test(entry.path))
     .map((entry) => {
       const parts = entry.path.split('/')
@@ -228,24 +240,81 @@ async function listUploadsOne() {
         name,
         path: entry.path,
         size: Number(entry.size) || 0,
-        sha: entry.sha,
-        kind: /\.(png|jpe?g|gif|webp|avif)$/i.test(name) ? 'image' : 'file',
+        kind: toKind(name),
+        storage: 'repo',
         url: `/uploads/${year}/${month}/${encodeURIComponent(name)}`
       }
     })
+
+  const blobItems = blobEntries
+    .filter((entry) => UPLOAD_EXTENSION_PATTERN.test(entry.pathname || ''))
+    .map((entry) => {
+      const parts = entry.pathname.split('/')
+      const name = parts[parts.length - 1]
+      const year = parts[parts.length - 3] || ''
+      const month = parts[parts.length - 2] || ''
+      return {
+        name,
+        path: entry.pathname,
+        size: Number(entry.size) || 0,
+        kind: toKind(name),
+        storage: 'blob',
+        url: `/uploads/${year}/${month}/${encodeURIComponent(name)}`
+      }
+    })
+
+  return [...blobItems, ...repoItems]
     .sort((a, b) => b.path.localeCompare(a.path))
     .slice(0, 500)
 }
 
+async function findUploadReferences(objectName) {
+  const targets = [
+    { type: 'post', repo: PUBLIC_REPO, dir: 'docs/posts' },
+    { type: 'draft', repo: DRAFTS_REPO, dir: 'drafts' }
+  ]
+  const refs = []
+  for (const target of targets) {
+    const files = await listDirectory(target.repo, target.dir)
+    const markdownFiles = files.filter((file) => file.type === 'file' && file.name.endsWith('.md'))
+    await Promise.all(
+      markdownFiles.map(async (file) => {
+        const detail = await getFile(target.repo, `${target.dir}/${file.name}`)
+        if (detail && detail.content.includes(objectName)) {
+          refs.push(`${target.type === 'post' ? '文章' : '草稿'}:${file.name.replace(/\.md$/, '')}`)
+        }
+      })
+    )
+  }
+  return refs
+}
+
 async function deleteUploadOne(payload) {
   const path = validateUploadPath(payload.path)
-  const result = await deleteFile(PUBLIC_REPO, path, `upload: delete ${path.split('/').pop()}`)
+  const objectName = path.split('/').pop()
+
+  const refs = await findUploadReferences(objectName)
+  if (refs.length) {
+    const error = new Error('upload_in_use')
+    error.refs = refs
+    throw error
+  }
+
+  if (hasBlob()) {
+    const meta = await headBlobObject(path)
+    if (meta) {
+      await deleteBlobObject(path)
+      return { ok: true, path, storage: 'blob' }
+    }
+  }
+
+  const result = await deleteFile(PUBLIC_REPO, path, `upload: delete ${objectName}`)
   if (!result.deleted) {
     const error = new Error('not_found')
     error.status = 404
     throw error
   }
-  return { ok: true, path }
+  return { ok: true, path, storage: 'repo' }
 }
 
 async function parseMarkdownOne(payload) {

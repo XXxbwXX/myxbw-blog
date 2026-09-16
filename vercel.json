@@ -4,6 +4,12 @@
   "buildCommand": "npm run docs:build",
   "outputDirectory": "docs/.vitepress/dist",
   "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/uploads/:path*",
+      "destination": "/api/uploads?path=:path*"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
