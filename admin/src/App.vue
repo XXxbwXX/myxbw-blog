@@ -26,6 +26,10 @@ const mediaInput = ref(null)
 const markdownInput = ref(null)
 const uploading = ref(false)
 const importing = ref(false)
+const view = ref('editor')
+const manageSearch = ref('')
+const manageStatus = ref('all')
+const manageBusy = ref(false)
 
 const BLOG_ORIGIN = 'https://blog.myxbw.cn'
 const UPLOAD_LIMIT = 3 * 1024 * 1024
@@ -52,6 +56,17 @@ const previewHtml = computed(() => {
 })
 const isDirty = computed(() => (active.value ? serialize(active.value) !== baseline.value : false))
 const statusLabel = computed(() => (active.value?.type === 'draft' ? '草稿' : '已发布'))
+const manageItems = computed(() => {
+  const query = manageSearch.value.trim().toLowerCase()
+  const items = [
+    ...posts.value.map((item) => ({ ...item, type: 'post' })),
+    ...drafts.value.map((item) => ({ ...item, type: 'draft' }))
+  ]
+  return items
+    .filter((item) => manageStatus.value === 'all' || item.type === manageStatus.value)
+    .filter((item) => !query || [item.title, item.slug, (item.tags || []).join(' ')].join(' ').toLowerCase().includes(query))
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+})
 
 function serialize(value) {
   return JSON.stringify({
@@ -109,6 +124,7 @@ function switchTab(next) {
 }
 
 function newPost() {
+  view.value = 'editor'
   tab.value = 'draft'
   setActive(emptyForm())
   sidebarOpen.value = false
@@ -154,6 +170,7 @@ async function loadAll() {
 }
 
 async function openItem(item) {
+  view.value = 'editor'
   try {
     resetMessages()
     const result = await adminApi.get(tab.value, item.slug)
@@ -373,6 +390,75 @@ async function deleteDraft() {
   }
 }
 
+function showManage() {
+  view.value = 'manage'
+  manageSearch.value = ''
+  manageStatus.value = 'all'
+  sidebarOpen.value = false
+  resetMessages()
+  loadAll()
+}
+
+async function openManagedItem(item) {
+  tab.value = item.type
+  await openItem(item)
+}
+
+function openPublished(item) {
+  if (item.type !== 'post') return
+  window.open(`https://blog.myxbw.cn/posts/${encodeURIComponent(item.slug)}`, '_blank', 'noopener,noreferrer')
+}
+
+async function publishManaged(item) {
+  if (item.type !== 'draft') return
+  if (!window.confirm(`确认发布《${item.title || item.slug}》？`)) return
+  manageBusy.value = true
+  try {
+    await run(() => adminApi.publish(item.slug), '已发布，Vercel 正在构建，约 1 分钟上线。')
+    await loadAll()
+  } catch {
+    // run 已经设置错误信息
+  } finally {
+    manageBusy.value = false
+  }
+}
+
+async function unpublishManaged(item) {
+  if (item.type !== 'post') return
+  if (!window.confirm(`确认下架《${item.title || item.slug}》？会从公开仓库删除，并转回草稿。`)) return
+  manageBusy.value = true
+  try {
+    await run(() => adminApi.unpublish(item.slug), '已下架，并转回草稿。')
+    if (active.value?.slug === item.slug && active.value?.type === 'post') {
+      active.value = null
+      baseline.value = ''
+    }
+    await loadAll()
+  } catch {
+    // run 已经设置错误信息
+  } finally {
+    manageBusy.value = false
+  }
+}
+
+async function deleteManaged(item) {
+  const label = item.type === 'post' ? '已发布文章' : '草稿'
+  if (!window.confirm(`确认删除${label}《${item.title || item.slug}》？删除后无法恢复。`)) return
+  manageBusy.value = true
+  try {
+    await run(() => adminApi.remove(item.type, item.slug), `${label}已删除。`)
+    if (active.value?.slug === item.slug && active.value?.type === item.type) {
+      active.value = null
+      baseline.value = ''
+    }
+    await loadAll()
+  } catch {
+    // run 已经设置错误信息
+  } finally {
+    manageBusy.value = false
+  }
+}
+
 function handleBeforeUnload(event) {
   if (!isDirty.value) return
   event.preventDefault()
@@ -403,6 +489,7 @@ onBeforeUnmount(() => {
       </div>
 
       <button class="new-button" type="button" @click="newPost">＋ 新文章</button>
+      <button class="manage-button" type="button" @click="showManage">📚 文章管理</button>
 
       <div class="tabs">
         <button type="button" :class="{ active: tab === 'post' }" @click="switchTab('post')">
@@ -448,10 +535,16 @@ onBeforeUnmount(() => {
       <header class="topbar">
         <button class="menu-button" type="button" @click="sidebarOpen = !sidebarOpen">☰</button>
         <div class="topbar-title">
-          <strong>{{ active?.isNew ? '新文章' : active?.title || '未选择文章' }}</strong>
-          <span v-if="active" class="status-pill" :class="{ draft: active.type === 'draft' }">{{ statusLabel }}</span>
+          <strong>{{ view === 'manage' ? '文章管理' : active?.isNew ? '新文章' : active?.title || '未选择文章' }}</strong>
+          <span v-if="view === 'editor' && active" class="status-pill" :class="{ draft: active.type === 'draft' }">{{ statusLabel }}</span>
         </div>
-        <div class="topbar-actions">
+        <div v-if="view === 'manage'" class="topbar-actions">
+          <button class="ghost-button" type="button" :disabled="loading" @click="loadAll">
+            {{ loading ? '刷新中…' : '刷新' }}
+          </button>
+          <button class="primary-button" type="button" @click="newPost">＋ 新文章</button>
+        </div>
+        <div v-else class="topbar-actions">
           <button class="ghost-button" type="button" @click="preview = !preview">
             {{ preview ? '关闭预览' : '预览' }}
           </button>
@@ -476,7 +569,51 @@ onBeforeUnmount(() => {
       <div v-if="error" class="toast error">{{ error }}</div>
       <div v-else-if="notice" class="toast notice">{{ notice }}</div>
 
-      <section v-if="!active" class="empty-state">
+      <section v-if="view === 'manage'" class="manage-panel">
+        <div class="manage-toolbar">
+          <div class="manage-filters">
+            <input v-model="manageSearch" class="search manage-search" type="search" placeholder="搜索标题、slug、标签…" />
+            <select v-model="manageStatus" class="status-filter">
+              <option value="all">全部</option>
+              <option value="post">已发布</option>
+              <option value="draft">草稿</option>
+            </select>
+          </div>
+          <span class="manage-count">{{ manageItems.length }} 篇</span>
+        </div>
+
+        <div class="manage-table">
+          <div class="manage-row manage-head">
+            <span>状态</span>
+            <span>标题</span>
+            <span>slug</span>
+            <span>日期</span>
+            <span>标签</span>
+            <span>操作</span>
+          </div>
+          <div
+            v-for="item in manageItems"
+            :key="item.type + ':' + item.slug"
+            class="manage-row"
+          >
+            <span class="status-pill" :class="{ draft: item.type === 'draft' }">{{ item.type === 'draft' ? '草稿' : '已发布' }}</span>
+            <span class="manage-title" :title="item.title || item.slug">{{ item.title || item.slug }}</span>
+            <code class="manage-slug">{{ item.slug }}</code>
+            <span>{{ formatDate(item.date) }}</span>
+            <span class="manage-tags">{{ (item.tags || []).join(', ') || '—' }}</span>
+            <span class="manage-actions">
+              <button type="button" class="link-button" @click="openManagedItem(item)">编辑</button>
+              <button v-if="item.type === 'post'" type="button" class="link-button" @click="openPublished(item)">查看</button>
+              <button v-if="item.type === 'draft'" type="button" class="link-button" :disabled="manageBusy" @click="publishManaged(item)">发布</button>
+              <button v-if="item.type === 'post'" type="button" class="link-button" :disabled="manageBusy" @click="unpublishManaged(item)">下架</button>
+              <button type="button" class="link-button danger" :disabled="manageBusy" @click="deleteManaged(item)">删除</button>
+            </span>
+          </div>
+          <p v-if="!manageItems.length" class="empty-note">没有匹配的文章。</p>
+        </div>
+      </section>
+
+      <section v-else-if="!active" class="empty-state">
         <h1>选一篇文章开始改</h1>
         <p>或者点右上角「新文章」。</p>
       </section>

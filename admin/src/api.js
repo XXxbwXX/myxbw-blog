@@ -29,6 +29,7 @@ export const adminApi = {
   get: (type, slug) => request('POST', { action: 'get', type, slug }),
   save: (payload) => request('POST', { action: 'save', ...payload }),
   publish: (slug) => request('POST', { action: 'publish', slug }),
+  unpublish: (slug) => request('POST', { action: 'unpublish', slug }),
   remove: (type, slug) => request('POST', { action: 'delete', type, slug }),
   upload: (payload) => request('POST', { action: 'upload', ...payload }),
   parseMarkdown: (payload) => request('POST', { action: 'parseMarkdown', ...payload })
@@ -50,6 +51,8 @@ export function errorText(error) {
     invalid_file_type: '只支持 PNG/JPG/GIF/WebP/AVIF/PDF/TXT/MD/ZIP。',
     invalid_file_data: '文件内容校验失败，请确认文件没有损坏。',
     file_too_large: '文件太大了，单个文件不能超过 3MB。',
+    draft_conflict: '同名草稿已存在，先把草稿处理掉再下架。',
+    protected_post: '不能删除受保护的文章。',
     too_many_requests: '操作太频繁，请稍后再试。',
     not_found: '没有找到这篇文章。',
     conflict: '文件在别处被改过，请刷新后重试。',

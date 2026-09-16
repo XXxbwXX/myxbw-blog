@@ -32,6 +32,8 @@ function publicError(error) {
   if (message === 'token_missing' || code === 'token_missing') return { status: 503, body: { error: 'token_missing' } }
   if (message === 'body_too_large') return { status: 413, body: { error: 'body_too_large' } }
   if (message === 'file_too_large') return { status: 413, body: { error: 'file_too_large' } }
+  if (message === 'draft_conflict') return { status: 409, body: { error: 'draft_conflict' } }
+  if (message === 'protected_post') return { status: 400, body: { error: 'protected_post' } }
   if (message.startsWith('invalid_') || message === 'too_many_tags' || message === 'content_too_large') {
     return { status: 400, body: { error: message } }
   }
@@ -137,14 +139,45 @@ async function publishOne(slug) {
   return { ok: true, slug, url: `/posts/${slug}` }
 }
 
+const PROTECTED_POST_SLUGS = new Set(['index'])
+
 async function deleteOne(type, slug) {
-  if (type !== 'draft') {
-    const error = new Error('invalid_type')
+  if (type === 'post') {
+    if (PROTECTED_POST_SLUGS.has(slug)) {
+      const error = new Error('protected_post')
+      error.status = 400
+      throw error
+    }
+    await deleteFile(PUBLIC_REPO, `docs/posts/${slug}.md`, `post: delete ${slug}`)
+    return { ok: true, slug, type }
+  }
+
+  await deleteFile(DRAFTS_REPO, `drafts/${slug}.md`, `draft: delete ${slug}`)
+  return { ok: true, slug, type: 'draft' }
+}
+
+async function unpublishOne(slug) {
+  if (PROTECTED_POST_SLUGS.has(slug)) {
+    const error = new Error('protected_post')
     error.status = 400
     throw error
   }
-  await deleteFile(DRAFTS_REPO, `drafts/${slug}.md`, `draft: delete ${slug}`)
-  return { ok: true, slug }
+  const source = await getFile(PUBLIC_REPO, `docs/posts/${slug}.md`)
+  if (!source) {
+    const error = new Error('not_found')
+    error.status = 404
+    throw error
+  }
+  const existingDraft = await getFile(DRAFTS_REPO, `drafts/${slug}.md`)
+  if (existingDraft) {
+    const error = new Error('draft_conflict')
+    error.status = 409
+    throw error
+  }
+
+  await putFile(DRAFTS_REPO, `drafts/${slug}.md`, source.content, `unpublish: ${slug}`)
+  await deleteFile(PUBLIC_REPO, `docs/posts/${slug}.md`, `unpublish: ${slug} (remove post)`)
+  return { ok: true, slug, type: 'draft' }
 }
 
 function shanghaiMonth(date = new Date()) {
@@ -235,6 +268,10 @@ export default async function handler(req, res) {
     if (action === 'publish') {
       const slug = validateSlug(payload.slug)
       return json(res, 200, await publishOne(slug))
+    }
+    if (action === 'unpublish') {
+      const slug = validateSlug(payload.slug)
+      return json(res, 200, await unpublishOne(slug))
     }
     if (action === 'delete') {
       const type = payload.type === 'draft' ? 'draft' : 'post'
