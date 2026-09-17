@@ -33,7 +33,9 @@ export default defineConfig({
           { text: '🐧 Linux 命令行站', link: 'https://linux.myxbw.cn/' },
           { text: '🗄️ 数据库原理及其应用', link: 'https://mysql.myxbw.cn/' },
           { text: '⛏️ 数据挖掘学习站', link: 'https://dm.myxbw.cn/' },
-          { text: '🚩 CTF 学习站', link: 'https://ctf.myxbw.cn/' }
+          { text: '🚩 CTF 学习站', link: 'https://ctf.myxbw.cn/' },
+          { text: '🌿 Git 与版本控制', link: 'https://git.myxbw.cn/' },
+          { text: '🧰 开发者工具箱', link: 'https://tools.myxbw.cn/' }
         ]
       }
     ],
