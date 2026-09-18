@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useData, useRoute } from 'vitepress'
 
 // ① 在 https://giscus.app/zh-CN 安装 giscus App 并选择本仓库
@@ -46,6 +46,12 @@ function mountGiscus() {
   script.setAttribute('data-loading', 'lazy')
   box.appendChild(script)
 }
+
+// 首次加载（直接打开/刷新文章页）不会触发下面的 watch，必须在挂载后手动挂一次，
+// 否则 giscus 的 iframe 永远不加载，只在站内跳转（route.path 变化）时才出现。
+onMounted(() => {
+  if (enabled.value) nextTick(mountGiscus)
+})
 
 watch(enabled, (value) => value && nextTick(mountGiscus))
 watch(
